@@ -1,0 +1,8 @@
+# Local environment configuration (never commit real server credentials)
+.env
+
+# Temporary archives produced during backups/restores
+ros2volume-*.tar.gz
+
+# macOS metadata
+.DS_Store
