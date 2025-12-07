@@ -1,58 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-ENV_FILE="${PROJECT_ROOT}/.env"
+REMOTE_DIR="${REMOTE_DIR:-${1:-/srv/ros2_backups}}"
 
-if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "找不到环境配置：${ENV_FILE}" >&2
-  exit 1
-fi
+# 用途：在服务器本地运行，创建/验证备份目录，并在需要时使用 sudo。
 
-# shellcheck disable=SC1090
-source "${ENV_FILE}"
-
-: "${REMOTE_USER:?请在 .env 中设置 REMOTE_USER}"
-: "${REMOTE_HOST:?请在 .env 中设置 REMOTE_HOST}"
-: "${REMOTE_DIR:?请在 .env 中设置 REMOTE_DIR}"
-REMOTE_PORT="${REMOTE_PORT:-22}"
-SSH_IDENTITY_FILE="${SSH_IDENTITY_FILE:-}"
-
-SSH_TARGET="${REMOTE_USER}@${REMOTE_HOST}"
-SSH_OPTS=(-p "${REMOTE_PORT}" -o StrictHostKeyChecking=accept-new)
-
-if [[ -n "${SSH_IDENTITY_FILE}" ]]; then
-  SSH_OPTS+=(-i "${SSH_IDENTITY_FILE}")
-fi
-
-echo "=== 初始化远程备份服务器 ==="
-echo "SSH:  ${SSH_TARGET}"
-echo "目录: ${REMOTE_DIR}"
+echo "=== 初始化备份目录（在服务器上执行） ==="
+echo "目标目录：${REMOTE_DIR}"
 echo
 
-echo "[1/3] 测试 SSH 连通性..."
-ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "echo '  ✓ 远程服务器在线：' \"\$(hostname)\""
-
-echo "[2/3] 确保备份目录存在并归属当前用户..."
-ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "bash -s" -- "${REMOTE_DIR}" <<'EOF'
-set -euo pipefail
-remote_dir="$1"
-if ! mkdir -p "${remote_dir}" 2>/dev/null; then
-  if command -v sudo >/dev/null 2>&1; then
-    sudo mkdir -p "${remote_dir}"
-    sudo chown "$USER":"$USER" "${remote_dir}"
-  else
-    echo "无法创建目录 ${remote_dir}（缺少权限）" >&2
+read -r -p "确认当前是在目标服务器上执行？(y/N): " CONFIRM
+case "${CONFIRM}" in
+  y|Y|yes|YES)
+    ;;
+  *)
+    echo "已取消。请登录服务器后再运行此脚本。"
     exit 1
-  fi
-fi
-chmod 700 "${remote_dir}" >/dev/null 2>&1 || true
-EOF
+    ;;
+esac
 
-echo "[3/3] 当前目录信息："
-ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "ls -ld '${REMOTE_DIR}' && df -h '${REMOTE_DIR}' 2>/dev/null || true"
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "[1/3] 尝试在当前用户权限下创建目录..."
+  if mkdir -p "${REMOTE_DIR}" 2>/dev/null; then
+    echo "  ✓ 已创建/存在：${REMOTE_DIR}"
+  else
+    echo "  ✗ 创建失败，尝试使用 sudo..."
+    if command -v sudo >/dev/null 2>&1; then
+      sudo mkdir -p "${REMOTE_DIR}"
+      sudo chown "${USER}:${USER}" "${REMOTE_DIR}"
+      echo "  ✓ 通过 sudo 创建并切换所有权。"
+    else
+      echo "错误：没有权限创建 ${REMOTE_DIR} 且无法使用 sudo。" >&2
+      exit 1
+    fi
+  fi
+else
+  echo "[1/3] 当前为 root 用户，直接创建目录..."
+  mkdir -p "${REMOTE_DIR}"
+fi
+
+echo "[2/3] 设置权限并输出状态..."
+chmod 700 "${REMOTE_DIR}" >/dev/null 2>&1 || true
+ls -ld "${REMOTE_DIR}"
+
+echo "[3/3] 显示磁盘占用："
+df -h "${REMOTE_DIR}" 2>/dev/null || df -h .
 
 echo
-echo "=== 远程服务器准备完成 ==="
-echo "现在可以使用 push/pull 脚本与 ${REMOTE_DIR} 同步备份。"
+echo "=== 服务器已准备完成，可用于 push/pull 备份 ==="

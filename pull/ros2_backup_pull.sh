@@ -20,6 +20,7 @@ source "${ENV_FILE}"
 : "${REMOTE_DIR:?请在 .env 中设置 REMOTE_DIR}"
 REMOTE_PORT="${REMOTE_PORT:-22}"
 SSH_IDENTITY_FILE="${SSH_IDENTITY_FILE:-}"
+FORCE_CONTAINER_RESTART="${FORCE_CONTAINER_RESTART:-true}"
 
 SSH_TARGET="${REMOTE_USER}@${REMOTE_HOST}"
 SSH_OPTS=(-p "${REMOTE_PORT}" -o StrictHostKeyChecking=accept-new)
@@ -38,6 +39,21 @@ echo "Volume:    ${VOLUME_NAME}"
 echo "Container: ${CONTAINER_NAME}"
 echo "Remote:    ${SSH_TARGET}:${REMOTE_DIR}"
 echo
+
+CONTAINER_WAS_RUNNING=false
+if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+  echo "容器 ${CONTAINER_NAME} 当前正在运行，为保证恢复过程的数据一致需要先停止。"
+  read -r -p "请确认已保存所有工作内容，输入 y 后继续 (y/N): " CONFIRM
+  case "${CONFIRM}" in
+    y|Y|yes|YES)
+      ;;
+    *)
+      echo "已取消 pull。"
+      exit 0
+      ;;
+  esac
+  CONTAINER_WAS_RUNNING=true
+fi
 
 # 1. 在云端选定要用的备份文件
 if [[ "${BACKUP_FILE_REMOTE}" = "latest" ]]; then
@@ -90,9 +106,15 @@ trap - EXIT
 echo "  ✓ 恢复完成"
 
 # 可选：重启容器
-if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-  echo "[6/6] 尝试重新启动容器 ${CONTAINER_NAME} ..."
-  docker start "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+if [[ "${CONTAINER_WAS_RUNNING}" == true || "${FORCE_CONTAINER_RESTART}" == true ]]; then
+  if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+    echo "[6/6] 尝试重新启动容器 ${CONTAINER_NAME} ..."
+    docker start "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+  else
+    echo "[6/6] 容器 ${CONTAINER_NAME} 不存在，无法重新启动。"
+  fi
+elif [[ "${CONTAINER_WAS_RUNNING}" != true ]]; then
+  echo "[6/6] 容器 ${CONTAINER_NAME} 在脚本开始前未运行，跳过重新启动。"
 fi
 
 echo
